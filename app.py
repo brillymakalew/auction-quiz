@@ -604,7 +604,7 @@ st.markdown(
         <div class="hero-title">Digital Question Auction Arena</div>
         <div class="hero-subtitle">
             Kelompok mengelola poin, melakukan bidding, dan merebut hak menjawab pertanyaan.
-            Cocok untuk kelas interaktif & diskusi yang rame tapi terstruktur.
+            created by Brilly Andro brillyandro.com
         </div>
     </div>
     """,
