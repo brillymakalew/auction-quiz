@@ -1136,7 +1136,7 @@ elif mode == "Auction":
                     st.session_state.current_bids = []
                     delete_all_bids_for_question(idx, conn)
                     st.session_state.show_clear_confirm = False
-                    st.experimental_rerun()
+                    st.rerun()
             with cc2:
                 if st.button("❌ Batal", key="confirm_clear_no"):
                     st.session_state.show_clear_confirm = False
@@ -1177,7 +1177,7 @@ elif mode == "Auction":
                             if bb["group"] != b["group"]
                         ]
                         delete_bids_for_group(idx, b["group"], conn)
-                        st.experimental_rerun()
+                        st.rerun()
 
             highest = get_highest_bid()
             if highest:
@@ -1218,7 +1218,7 @@ elif mode == "Auction":
                 st.session_state.current_bids = []
                 st.session_state.show_clear_confirm = False
                 st.session_state.current_q_idx = get_current_q_index_from_db(conn)
-                st.experimental_rerun()
+                st.rerun()
 
     # tombol skip – hanya boleh kalau tidak ada bid
     with col_skip:
@@ -1233,7 +1233,7 @@ elif mode == "Auction":
                 st.session_state.show_clear_confirm = False
                 st.session_state.current_q_idx = get_current_q_index_from_db(conn)
                 st.success("Pertanyaan ini di-skip. Tidak ada pemenang.")
-                st.experimental_rerun()
+                st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
