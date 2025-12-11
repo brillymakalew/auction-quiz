@@ -5,17 +5,9 @@ from datetime import datetime
 import os
 import glob
 
-# ----------------------------------------------------
-# STREAMLIT CONFIG
-# ----------------------------------------------------
-st.set_page_config(
-    page_title="Auction Pertanyaan Kelompok",
-    layout="wide",
-)
+st.set_page_config(page_title="Auction Pertanyaan Kelompok", layout="wide")
 
-# ----------------------------------------------------
-# GLOBAL STYLE (THEME)
-# ----------------------------------------------------
+# ---------------------- GLOBAL STYLE ----------------------
 st.markdown(
     """
     <style>
@@ -25,7 +17,6 @@ st.markdown(
     }
     [data-testid="stHeader"] { background: transparent; }
 
-    /* Sedikit rapikan padding utama */
     [data-testid="stAppViewContainer"] > .main {
         padding: 1.4rem 2.4rem 2.2rem 2.4rem;
     }
@@ -130,7 +121,7 @@ st.markdown(
         color: #e5e7eb !important;
     }
 
-    /* dropdown selectbox dark */
+    /* dropdown baseweb */
     div[data-baseweb="select"] > div {
         background-color: rgba(15,23,42,0.92) !important;
         color: #e5e7eb !important;
@@ -212,7 +203,7 @@ st.markdown(
         font-weight:700;
     }
 
-    /* Tombol HAPUS BID: pure icon, no background */
+    /* icon delete bid */
     div[class^="st-key-del_bid_"] button,
     div[class*=" st-key-del_bid_"] button {
         background: transparent !important;
@@ -231,14 +222,29 @@ st.markdown(
         color: #ffffff !important;
         transform: scale(1.2);
     }
+
+    /* tombol di sidebar untuk rename / delete kelas (tanpa background kuning) */
+    #class-actions button,
+    #class-actions-2 button {
+        background: transparent !important;
+        box-shadow: none !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(148,163,184,0.6) !important;
+        color: #e5e7eb !important;
+        font-weight: 500 !important;
+        padding: 0.25rem 0.85rem !important;
+        font-size: 0.85rem !important;
+    }
+    #class-actions-2 button {
+        border-color: rgba(248,113,113,0.7) !important;
+        color: #fecaca !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------
-# CLASS / DB HELPERS
-# ----------------------------------------------------
+# ---------------------- DB HELPERS ----------------------
 def class_label_to_safe(label: str) -> str:
     label = (label or "").strip()
     if not label:
@@ -257,7 +263,7 @@ def list_existing_classes():
     files = glob.glob("auction_*.db")
     labels = []
     for f in files:
-        base = os.path.splitext(os.path.basename(f))[0]  # auction_xxx
+        base = os.path.splitext(os.path.basename(f))[0]
         if not base.startswith("auction_"):
             continue
         safe = base[len("auction_") :]
@@ -271,13 +277,9 @@ def get_db_path():
     return f"auction_{safe}.db"
 
 
-# ----------------------------------------------------
-# DB FUNCTIONS
-# ----------------------------------------------------
 def init_db(db_path: str):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     c = conn.cursor()
-
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS groups (
@@ -319,6 +321,13 @@ def init_db(db_path: str):
         )
         """
     )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skipped_questions (
+            question_index INTEGER PRIMARY KEY
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -340,8 +349,6 @@ def load_groups_from_db(conn):
 def save_groups_to_db(groups, conn):
     c = conn.cursor()
     c.execute("DELETE FROM groups")
-    c.execute("DELETE FROM bids")
-    c.execute("DELETE FROM winners")
     for g in groups:
         c.execute(
             "INSERT INTO groups (name, initial_points) VALUES (?, ?)",
@@ -362,8 +369,6 @@ def load_questions_from_db(conn):
 def save_questions_to_db(questions, conn):
     c = conn.cursor()
     c.execute("DELETE FROM questions")
-    c.execute("DELETE FROM bids")
-    c.execute("DELETE FROM winners")
     for idx, q in enumerate(questions):
         c.execute(
             "INSERT INTO questions (question_index, question, base_cost) VALUES (?, ?, ?)",
@@ -426,12 +431,21 @@ def compute_scores_from_db(conn):
 
 
 def get_current_q_index_from_db(conn):
+    """Cari pertanyaan pertama yang belum punya pemenang & tidak di-skip."""
     c = conn.cursor()
-    c.execute("SELECT MAX(question_index) FROM winners")
+    c.execute("SELECT COUNT(*) FROM questions")
     row = c.fetchone()
-    if row is None or row[0] is None:
-        return 0
-    return row[0] + 1
+    total = row[0] if row and row[0] is not None else 0
+
+    c.execute("SELECT DISTINCT question_index FROM winners")
+    done = {r[0] for r in c.fetchall()}
+    c.execute("SELECT question_index FROM skipped_questions")
+    skipped = {r[0] for r in c.fetchall()}
+
+    for i in range(total):
+        if i not in done and i not in skipped:
+            return i
+    return total  # semua sudah selesai
 
 
 def load_current_bids_for_question(question_index, conn):
@@ -459,9 +473,15 @@ def get_max_bid_for_group(question_index, group_name, conn):
     return row[0] if row and row[0] is not None else None
 
 
-# ----------------------------------------------------
-# SESSION STATE INIT
-# ----------------------------------------------------
+def mark_question_skipped(question_index, conn):
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO skipped_questions (question_index) VALUES (?)",
+        (question_index,),
+    )
+    conn.commit()
+
+# ---------------------- SESSION STATE ----------------------
 if "groups" not in st.session_state:
     st.session_state.groups = []
 if "scores" not in st.session_state:
@@ -479,26 +499,22 @@ if "show_clear_confirm" not in st.session_state:
 if "confirm_delete_class" not in st.session_state:
     st.session_state.confirm_delete_class = None
 
-# ----------------------------------------------------
-# SIDEBAR: CLASS SELECTION & MANAGEMENT
-# ----------------------------------------------------
+# ---------------------- SIDEBAR: KELAS ----------------------
 st.sidebar.title("🏫 Kelas")
-
 existing_classes = list_existing_classes()
 current_class = st.session_state.get("current_class_name", "")
 
+# pilih / buat kelas
 if existing_classes:
     options = ["(Kelas baru)"] + existing_classes
     default_index = 0
     if current_class and current_class in existing_classes:
         default_index = existing_classes.index(current_class) + 1
-
     selected = st.sidebar.selectbox(
-        "Pilih kelas tersimpan:",
+        "Pilih / buat kelas",
         options,
         index=default_index,
     )
-
     if selected == "(Kelas baru)":
         class_input = st.sidebar.text_input(
             "Nama kelas baru:",
@@ -514,7 +530,7 @@ else:
         placeholder="Misal: IF401 Pagi",
     )
 
-# ganti kelas -> reset koneksi & init ulang
+# ganti kelas
 if class_input != current_class:
     st.session_state["current_class_name"] = class_input.strip()
     if "db_conn" in st.session_state:
@@ -526,85 +542,85 @@ if class_input != current_class:
     st.session_state.pop("initialized_from_db", None)
     st.rerun()
 
-# Kelola kelas (rename / delete)
-st.sidebar.markdown("### Kelola kelas")
-if existing_classes:
-    manage_selected = st.sidebar.selectbox(
-        "Pilih kelas untuk diubah / hapus",
-        existing_classes,
-        key="manage_class_select",
-    )
-
+# kelola kelas aktif (rename / delete) – pakai kelas yang sama, tidak perlu pilih 2x
+current_class = st.session_state.get("current_class_name", "").strip()
+if current_class:
     new_name = st.sidebar.text_input(
-        "Nama baru untuk kelas ini:",
-        value=manage_selected,
-        key="manage_class_name",
+        "Rename kelas aktif:",
+        value=current_class,
+        key="rename_class_name",
     )
 
-    col_m1, col_m2 = st.sidebar.columns(2)
-    with col_m1:
-        if st.button("💾 Rename kelas"):
-            old_safe = class_label_to_safe(manage_selected)
-            new_safe = class_label_to_safe(new_name)
-            old_path = f"auction_{old_safe}.db"
-            new_path = f"auction_{new_safe}.db"
-            if old_path != new_path and os.path.exists(new_path):
-                st.sidebar.error("Nama kelas baru sudah dipakai kelas lain.")
+    st.sidebar.markdown('<div id="class-actions">', unsafe_allow_html=True)
+    rename_clicked = st.sidebar.button("💾 Simpan nama kelas", key="btn_rename_active")
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    if rename_clicked and new_name and new_name != current_class:
+        old_safe = class_label_to_safe(current_class)
+        new_safe = class_label_to_safe(new_name)
+        old_path = f"auction_{old_safe}.db"
+        new_path = f"auction_{new_safe}.db"
+        if old_path != new_path and os.path.exists(new_path):
+            st.sidebar.error("Nama kelas baru sudah dipakai kelas lain.")
+        else:
+            try:
+                os.rename(old_path, new_path)
+            except FileNotFoundError:
+                st.sidebar.error("File DB kelas lama tidak ditemukan.")
             else:
-                try:
-                    os.rename(old_path, new_path)
-                except FileNotFoundError:
-                    st.sidebar.error("File DB kelas lama tidak ditemukan.")
-                else:
-                    if st.session_state.get("current_class_name", "") == manage_selected:
-                        st.session_state["current_class_name"] = new_name
-                        if "db_conn" in st.session_state:
-                            try:
-                                st.session_state["db_conn"].close()
-                            except Exception:
-                                pass
-                            del st.session_state["db_conn"]
-                        st.session_state.pop("initialized_from_db", None)
-                    st.sidebar.success("Nama kelas berhasil diubah.")
-                    st.rerun()
-
-    with col_m2:
-        if st.button("🗑 Hapus kelas ini"):
-            st.session_state.confirm_delete_class = manage_selected
-
-    if st.session_state.confirm_delete_class:
-        del_name = st.session_state.confirm_delete_class
-        st.sidebar.warning(
-            f"Yakin ingin menghapus kelas '{del_name}'? "
-            "Semua data bid & pemenang untuk kelas ini akan hilang."
-        )
-        c1, c2 = st.sidebar.columns(2)
-        with c1:
-            if st.button("✅ Ya, hapus", key="confirm_delete_yes"):
-                safe = class_label_to_safe(del_name)
-                path = f"auction_{safe}.db"
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception as e:
-                    st.sidebar.error(f"Gagal menghapus file DB: {e}")
-                else:
-                    if st.session_state.get("current_class_name", "") == del_name:
-                        st.session_state["current_class_name"] = ""
-                        if "db_conn" in st.session_state:
-                            try:
-                                st.session_state["db_conn"].close()
-                            except Exception:
-                                pass
-                            del st.session_state["db_conn"]
-                        st.session_state.pop("initialized_from_db", None)
-                    st.sidebar.success(f"Kelas '{del_name}' dihapus.")
-                st.session_state.confirm_delete_class = None
+                if "db_conn" in st.session_state:
+                    try:
+                        st.session_state["db_conn"].close()
+                    except Exception:
+                        pass
+                    del st.session_state["db_conn"]
+                st.session_state["current_class_name"] = new_name
+                st.session_state.pop("initialized_from_db", None)
+                st.sidebar.success("Nama kelas berhasil diubah.")
                 st.rerun()
-        with c2:
-            if st.button("❌ Batal", key="confirm_delete_no"):
-                st.session_state.confirm_delete_class = None
 
+    st.sidebar.markdown('<div id="class-actions-2">', unsafe_allow_html=True)
+    delete_clicked = st.sidebar.button("🗑 Hapus kelas ini", key="btn_delete_active")
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    if delete_clicked:
+        st.session_state.confirm_delete_class = current_class
+
+# konfirmasi hapus kelas
+if st.session_state.confirm_delete_class:
+    del_name = st.session_state.confirm_delete_class
+    st.sidebar.warning(
+        f"Yakin ingin menghapus kelas '{del_name}'? "
+        "Semua data bid & pemenang untuk kelas ini akan hilang."
+    )
+    c1, c2 = st.sidebar.columns(2)
+    with c1:
+        if st.sidebar.button("✅ Ya, hapus", key="confirm_delete_yes"):
+            safe = class_label_to_safe(del_name)
+            path = f"auction_{safe}.db"
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                st.sidebar.error(f"Gagal menghapus file DB: {e}")
+            else:
+                if st.session_state.get("current_class_name", "") == del_name:
+                    st.session_state["current_class_name"] = ""
+                    if "db_conn" in st.session_state:
+                        try:
+                            st.session_state["db_conn"].close()
+                        except Exception:
+                            pass
+                        del st.session_state["db_conn"]
+                    st.session_state.pop("initialized_from_db", None)
+                st.sidebar.success(f"Kelas '{del_name}' dihapus.")
+            st.session_state.confirm_delete_class = None
+            st.rerun()
+    with c2:
+        if st.sidebar.button("❌ Batal", key="confirm_delete_no"):
+            st.session_state.confirm_delete_class = None
+
+# mode
 mode = st.sidebar.radio("🎮 Mode Game", ["Setup", "Auction", "Jawaban Kelompok"])
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -615,9 +631,7 @@ st.sidebar.markdown(
     "- Lihat rincian tugas jawaban di *Jawaban Kelompok*"
 )
 
-# ----------------------------------------------------
-# DB CONNECTION & FIRST LOAD
-# ----------------------------------------------------
+# ---------------------- INIT FROM DB ----------------------
 conn = get_db_conn()
 
 if "initialized_from_db" not in st.session_state:
@@ -645,11 +659,17 @@ if "initialized_from_db" not in st.session_state:
 
 
 def reset_auction_state_from_db():
+    """Refresh state dari DB (digunakan setelah full reset)."""
     st.session_state.scores = compute_scores_from_db(conn)
     st.session_state.winners = load_winners_from_db(conn)
-    st.session_state.current_q_idx = 0
-    if st.session_state.questions:
-        st.session_state.current_bids = load_current_bids_for_question(0, conn)
+    st.session_state.current_q_idx = get_current_q_index_from_db(conn)
+    if (
+        st.session_state.questions
+        and st.session_state.current_q_idx < len(st.session_state.questions)
+    ):
+        st.session_state.current_bids = load_current_bids_for_question(
+            st.session_state.current_q_idx, conn
+        )
     else:
         st.session_state.current_bids = []
     st.session_state.show_clear_confirm = False
@@ -669,9 +689,7 @@ def upsert_bid(group_name, bid_value):
     st.session_state.current_bids.append({"group": group_name, "bid": bid_value})
 
 
-# ----------------------------------------------------
-# HERO HEADER
-# ----------------------------------------------------
+# ---------------------- HEADER ----------------------
 st.markdown(
     """
     <div class="glass-card" style="margin-bottom: 1.2rem;">
@@ -686,12 +704,12 @@ st.markdown(
 )
 
 # =========================================================
-#                       MODE SETUP
+# MODE: SETUP
 # =========================================================
 if mode == "Setup":
     col_left, col_right = st.columns([1.1, 1])
 
-    # ---------- Kelompok ----------
+    # ---- Pengaturan Kelompok ----
     with col_left:
         st.markdown(
             '<div class="section-title">Pengaturan Kelompok</div>',
@@ -706,7 +724,6 @@ if mode == "Setup":
             value=len(st.session_state.groups) if st.session_state.groups else 4,
             step=1,
         )
-
         default_points = st.number_input(
             "Default initial point per kelompok (bisa diubah per kelompok nanti)",
             min_value=0,
@@ -720,7 +737,7 @@ if mode == "Setup":
                 for i in range(num_groups)
             ]
             save_groups_to_db(st.session_state.groups, conn)
-            reset_auction_state_from_db()
+            st.session_state.scores = compute_scores_from_db(conn)
             st.success("Kelompok default dibuat & disimpan ke DB. Silakan edit jika perlu.")
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -755,12 +772,12 @@ if mode == "Setup":
                     new_groups.append({"name": name, "initial_points": pts})
             st.session_state.groups = new_groups
             save_groups_to_db(new_groups, conn)
-            reset_auction_state_from_db()
-            st.success("Kelompok & poin awal disimpan ke DB. Auction di-reset.")
+            st.session_state.scores = compute_scores_from_db(conn)
+            st.success("Kelompok & poin awal disimpan ke DB (progress auction tetap).")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- Pertanyaan ----------
+    # ---- Pertanyaan ----
     with col_right:
         st.markdown(
             '<div class="section-title">Daftar Pertanyaan</div>',
@@ -771,7 +788,10 @@ if mode == "Setup":
         if not st.session_state.questions:
             st.session_state.questions = [
                 {"question": "Jelaskan konsep utama materi hari ini.", "base_cost": 10},
-                {"question": "Berikan contoh penerapan konsep ini di dunia nyata.", "base_cost": 15},
+                {
+                    "question": "Berikan contoh penerapan konsep ini di dunia nyata.",
+                    "base_cost": 15,
+                },
             ]
 
         questions_df = pd.DataFrame(st.session_state.questions)
@@ -796,37 +816,59 @@ if mode == "Setup":
                         new_questions.append({"question": qtext, "base_cost": cost})
                 st.session_state.questions = new_questions
                 save_questions_to_db(new_questions, conn)
-                reset_auction_state_from_db()
-                st.success("Pertanyaan disimpan ke DB & auction kembali ke awal.")
+                st.session_state.current_q_idx = get_current_q_index_from_db(conn)
+                st.success("Pertanyaan disimpan ke DB (progress auction disesuaikan).")
 
         with col_q2:
             if st.button("🔁 Reset poin & posisi auction (config tetap)"):
                 c = conn.cursor()
                 c.execute("DELETE FROM bids")
                 c.execute("DELETE FROM winners")
+                c.execute("DELETE FROM skipped_questions")
                 conn.commit()
                 reset_auction_state_from_db()
-                st.success("Poin & posisi auction di-reset. Config kelompok/pertanyaan tetap.")
+                st.success(
+                    "Poin, pemenang, dan posisi auction di-reset. Config kelompok/pertanyaan tetap."
+                )
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # ---- Import Pertanyaan ----
         st.markdown("")
         st.markdown(
-            '<div class="section-title">Import Pertanyaan dari Excel</div>',
+            '<div class="section-title">Import Pertanyaan dari File</div>',
             unsafe_allow_html=True,
         )
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
         uploaded = st.file_uploader(
-            "Upload file Excel dengan kolom: question, base_cost",
-            type=["xlsx", "xls"],
+            "Upload file (Excel/CSV) dengan kolom: question, base_cost",
+            type=["xlsx", "xls", "csv"],
         )
+
+        df_import = None
         if uploaded is not None:
-            df_import = pd.read_excel(uploaded)
+            filename = uploaded.name.lower()
+            try:
+                if filename.endswith(".csv"):
+                    df_import = pd.read_csv(uploaded)
+                else:
+                    df_import = pd.read_excel(uploaded)
+            except ImportError:
+                st.error(
+                    "Tidak bisa membaca file Excel karena package **openpyxl** belum terpasang.\n\n"
+                    "Solusi:\n"
+                    "- Tambahkan `openpyxl` di **requirements.txt**, atau\n"
+                    "- Simpan file sebagai **CSV** lalu upload lagi."
+                )
+            except Exception as e:
+                st.error(f"Gagal membaca file: {e}")
+
+        if df_import is not None:
             st.write("Preview data:")
             st.dataframe(df_import.head())
 
-            if st.button("📥 Gunakan data dari Excel ini"):
+            if st.button("📥 Gunakan data dari file ini"):
                 if "question" not in df_import.columns or "base_cost" not in df_import.columns:
                     st.error("File harus punya kolom 'question' dan 'base_cost'.")
                 else:
@@ -841,12 +883,14 @@ if mode == "Setup":
                             new_questions.append({"question": qtext, "base_cost": cost})
                     st.session_state.questions = new_questions
                     save_questions_to_db(new_questions, conn)
-                    reset_auction_state_from_db()
-                    st.success("Pertanyaan dari Excel disimpan ke DB & siap di-auction.")
+                    st.session_state.current_q_idx = get_current_q_index_from_db(conn)
+                    st.success(
+                        "Pertanyaan dari file disimpan ke DB & siap di-auction (progress lain tetap)."
+                    )
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Ringkasan
+        # ---- Ringkasan ----
         st.markdown("")
         st.markdown(
             '<div class="section-title">Ringkasan</div>',
@@ -871,16 +915,17 @@ if mode == "Setup":
         st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-#                       MODE AUCTION
+# MODE: AUCTION
 # =========================================================
 elif mode == "Auction":
     if not st.session_state.groups or not st.session_state.questions:
         st.error("Kelompok atau pertanyaan belum diset. Masuk ke mode **Setup** dulu.")
         st.stop()
 
+    # sync skor dari DB
     st.session_state.scores = compute_scores_from_db(conn)
 
-    # ---------- SCOREBOARD ----------
+    # ---- SCOREBOARD ----
     st.markdown(
         '<div class="section-title">Scoreboard Kelompok <span class="info-badge">Live</span></div>',
         unsafe_allow_html=True,
@@ -944,16 +989,18 @@ elif mode == "Auction":
 
     st.markdown("")
 
-    # ---------- CURRENT QUESTION ----------
+    # indeks pertanyaan aktif dihitung dari winners + skipped (jadi kalau reload tetap benar)
+    st.session_state.current_q_idx = get_current_q_index_from_db(conn)
     idx = st.session_state.current_q_idx
     total_q = len(st.session_state.questions)
 
-    # sync current_bids dari DB setiap rerun
+    # load bid dari DB untuk pertanyaan aktif -> mengatasi bug "data ada tapi tidak tampil"
     if idx < total_q:
         st.session_state.current_bids = load_current_bids_for_question(idx, conn)
     else:
         st.session_state.current_bids = []
 
+    # semua selesai
     if idx >= total_q:
         st.success("🎉 Semua pertanyaan sudah selesai di-auction.")
         st.markdown(
@@ -998,6 +1045,7 @@ elif mode == "Auction":
 
     current_q = st.session_state.questions[idx]
 
+    # ---- PERTANYAAN BERJALAN ----
     st.markdown(
         '<div class="section-title">Pertanyaan Berjalan</div>',
         unsafe_allow_html=True,
@@ -1026,9 +1074,9 @@ elif mode == "Auction":
 
     st.markdown("")
 
-    # ---------- AUCTION AREA ----------
     col_bid, col_table = st.columns([1.4, 1])
 
+    # ---- INPUT BID ----
     with col_bid:
         st.markdown(
             '<div class="section-title">Auction: Input Bid</div>',
@@ -1088,13 +1136,14 @@ elif mode == "Auction":
                     st.session_state.current_bids = []
                     delete_all_bids_for_question(idx, conn)
                     st.session_state.show_clear_confirm = False
-                    st.rerun()
+                    st.experimental_rerun()
             with cc2:
                 if st.button("❌ Batal", key="confirm_clear_no"):
                     st.session_state.show_clear_confirm = False
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ---- TABEL BID ----
     with col_table:
         st.markdown(
             '<div class="section-title">Bid Saat Ini</div>',
@@ -1128,7 +1177,7 @@ elif mode == "Auction":
                             if bb["group"] != b["group"]
                         ]
                         delete_bids_for_group(idx, b["group"], conn)
-                        st.rerun()
+                        st.experimental_rerun()
 
             highest = get_highest_bid()
             if highest:
@@ -1140,42 +1189,55 @@ elif mode == "Auction":
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ---- Tutup / Skip Pertanyaan ----
     st.markdown("")
-    # ---------- CONFIRM WINNER ----------
     st.markdown(
-        '<div class="section-title">Tutup Auction & Tetapkan Pemenang</div>',
+        '<div class="section-title">Tutup / Skip Pertanyaan</div>',
         unsafe_allow_html=True,
     )
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
-    if st.button("✅ Tutup Auction Pertanyaan Ini & Tetapkan Pemenang"):
-        if not st.session_state.current_bids:
-            st.warning("Belum ada bid. Tidak bisa menentukan pemenang.")
-        else:
-            highest = get_highest_bid()
-            winner_group = highest["group"]
-            bid_amount = highest["bid"]
+    col_finish, col_skip = st.columns(2)
+    with col_finish:
+        if st.button("✅ Tutup auction & tetapkan pemenang"):
+            if not st.session_state.current_bids:
+                st.warning("Belum ada bid. Tidak bisa menentukan pemenang.")
+            else:
+                highest = get_highest_bid()
+                winner_group = highest["group"]
+                bid_amount = highest["bid"]
+                save_winner_to_db(idx, winner_group, bid_amount, conn)
+                st.session_state.scores = compute_scores_from_db(conn)
+                st.session_state.winners = load_winners_from_db(conn)
+                st.success(
+                    f"Pemenang pertanyaan {idx+1}: **{winner_group}** dengan bid **{bid_amount}** poin."
+                )
+                st.info(
+                    f"Sisa poin {winner_group}: {st.session_state.scores[winner_group]} poin."
+                )
+                st.session_state.current_bids = []
+                st.session_state.show_clear_confirm = False
+                st.session_state.current_q_idx = get_current_q_index_from_db(conn)
+                st.experimental_rerun()
 
-            save_winner_to_db(idx, winner_group, bid_amount, conn)
-
-            st.session_state.scores = compute_scores_from_db(conn)
-            st.session_state.winners = load_winners_from_db(conn)
-
-            st.success(
-                f"Pemenang pertanyaan {idx+1}: **{winner_group}** dengan bid **{bid_amount}** poin."
-            )
-            st.info(
-                f"Sisa poin {winner_group}: {st.session_state.scores[winner_group]} poin."
-            )
-
-            st.session_state.current_q_idx += 1
-            st.session_state.current_bids = []
-            st.session_state.show_clear_confirm = False
-            st.rerun()
+    # tombol skip – hanya boleh kalau tidak ada bid
+    with col_skip:
+        if st.button("⏭ Skip pertanyaan (tanpa pemenang)"):
+            if st.session_state.current_bids:
+                st.warning(
+                    "Masih ada bid untuk pertanyaan ini. Hapus semua bid dulu jika ingin skip."
+                )
+            else:
+                mark_question_skipped(idx, conn)
+                st.session_state.current_bids = []
+                st.session_state.show_clear_confirm = False
+                st.session_state.current_q_idx = get_current_q_index_from_db(conn)
+                st.success("Pertanyaan ini di-skip. Tidak ada pemenang.")
+                st.experimental_rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- HISTORY (REKAP SEMENTARA) ----------
+    # ---- Rekap Pemenang Sementara ----
     st.markdown("")
     st.markdown(
         '<div class="section-title">Rekap Pemenang Sementara</div>',
@@ -1218,9 +1280,9 @@ elif mode == "Auction":
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-#                MODE JAWABAN KELOMPOK (VIEW ONLY)
+# MODE: JAWABAN KELOMPOK
 # =========================================================
-else:  # Jawaban Kelompok
+else:
     if not st.session_state.groups or not st.session_state.questions:
         st.error("Kelompok atau pertanyaan belum diset. Masuk ke mode **Setup** dulu.")
         st.stop()
@@ -1246,7 +1308,7 @@ else:  # Jawaban Kelompok
     groups_in_order = load_groups_from_db(conn)
     scores_dict = st.session_state.scores
 
-    # ---------- Summary card ----------
+    # ---- Ringkasan angka ----
     st.markdown(
         '<div class="section-title">Ringkasan Singkat</div>',
         unsafe_allow_html=True,
@@ -1283,7 +1345,7 @@ else:  # Jawaban Kelompok
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- Detail per group ----------
+    # ---- Detail per kelompok ----
     st.markdown(
         '<div class="section-title">Detail Pertanyaan per Kelompok</div>',
         unsafe_allow_html=True,
