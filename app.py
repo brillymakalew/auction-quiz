@@ -1,12 +1,12 @@
-import os
-import glob
 import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime
+import os
+import glob
 
 # ----------------------------------------------------
-# CONFIG
+# STREAMLIT CONFIG
 # ----------------------------------------------------
 st.set_page_config(
     page_title="Auction Pertanyaan Kelompok",
@@ -24,6 +24,12 @@ st.markdown(
         color: #f7f7ff;
     }
     [data-testid="stHeader"] { background: transparent; }
+
+    /* Sedikit rapikan padding utama */
+    [data-testid="stAppViewContainer"] > .main {
+        padding: 1.4rem 2.4rem 2.2rem 2.4rem;
+    }
+
     [data-testid="stSidebar"] {
         background: #0f172a;
         color: #e5e7eb;
@@ -49,7 +55,7 @@ st.markdown(
         font-size: 0.98rem;
         color: #cbd5f5;
         opacity: 0.85;
-        margin-bottom: 1.2rem;
+        margin-bottom: 1.0rem;
     }
 
     .glass-card {
@@ -58,9 +64,10 @@ st.markdown(
         padding: 1.1rem 1.3rem;
         border: 1px solid rgba(148,163,184,0.35);
         box-shadow:
-            0 18px 35px rgba(15,23,42,0.75),
+            0 16px 30px rgba(15,23,42,0.8),
             0 0 0 1px rgba(148,163,184,0.12);
         backdrop-filter: blur(16px);
+        margin-bottom: 1.1rem;
     }
 
     .section-title {
@@ -69,7 +76,7 @@ st.markdown(
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #9ca3ff;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0.4rem;
     }
 
     .score-card {
@@ -123,7 +130,7 @@ st.markdown(
         color: #e5e7eb !important;
     }
 
-    /* dropdown selectbox dark mode (baseweb) */
+    /* dropdown selectbox dark */
     div[data-baseweb="select"] > div {
         background-color: rgba(15,23,42,0.92) !important;
         color: #e5e7eb !important;
@@ -168,9 +175,8 @@ st.markdown(
         margin-bottom: 0.3rem;
     }
 
-    /* Question highlight card */
     .question-card {
-        margin: 0.9rem auto 0.5rem auto;
+        margin: 0.9rem auto 0.4rem auto;
         max-width: 900px;
         text-align: center;
         padding: 1.6rem 2.2rem;
@@ -230,32 +236,44 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ----------------------------------------------------
+# CLASS / DB HELPERS
+# ----------------------------------------------------
+def class_label_to_safe(label: str) -> str:
+    label = (label or "").strip()
+    if not label:
+        return "default"
+    safe = "".join(c if c.isalnum() else "_" for c in label)
+    return safe or "default"
+
+
+def safe_to_label(safe: str) -> str:
+    if safe == "default":
+        return "Default"
+    return safe.replace("_", " ")
+
+
 def list_existing_classes():
-    """Scan file auction_*.db dan kembalikan nama kelas yang sudah ada."""
     files = glob.glob("auction_*.db")
-    classes = []
+    labels = []
     for f in files:
-        base = os.path.splitext(os.path.basename(f))[0]  # contoh: auction_IF401_Pagi
+        base = os.path.splitext(os.path.basename(f))[0]  # auction_xxx
         if not base.startswith("auction_"):
             continue
-        safe = base[len("auction_"):]  # IF401_Pagi
-        label = safe.replace("_", " ")  # IF401 Pagi
-        classes.append(label)
-    # unik + urut
-    return sorted(set(classes))
+        safe = base[len("auction_") :]
+        labels.append(safe_to_label(safe))
+    return sorted(set(labels))
 
 
-# ----------------------------------------------------
-# DB FUNCTIONS (PER-CLASS FILE)
-# ----------------------------------------------------
 def get_db_path():
     cls = st.session_state.get("current_class_name", "").strip()
-    if not cls:
-        return "auction_default.db"
-    safe = "".join(c if c.isalnum() else "_" for c in cls)
+    safe = class_label_to_safe(cls)
     return f"auction_{safe}.db"
 
 
+# ----------------------------------------------------
+# DB FUNCTIONS
+# ----------------------------------------------------
 def init_db(db_path: str):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     c = conn.cursor()
@@ -355,7 +373,6 @@ def save_questions_to_db(questions, conn):
 
 
 def save_bid_to_db(question_index, group_name, bid, conn):
-    """Simpan setiap bid sebagai transaksi history (real time)."""
     c = conn.cursor()
     c.execute(
         "INSERT INTO bids (question_index, group_name, bid, ts) VALUES (?, ?, ?, ?)",
@@ -365,7 +382,6 @@ def save_bid_to_db(question_index, group_name, bid, conn):
 
 
 def delete_bids_for_group(question_index, group_name, conn):
-    """Hapus semua bid untuk satu kelompok pada satu pertanyaan dari DB."""
     c = conn.cursor()
     c.execute(
         "DELETE FROM bids WHERE question_index = ? AND group_name = ?",
@@ -375,7 +391,6 @@ def delete_bids_for_group(question_index, group_name, conn):
 
 
 def delete_all_bids_for_question(question_index, conn):
-    """Hapus semua bid (semua kelompok) untuk 1 pertanyaan."""
     c = conn.cursor()
     c.execute("DELETE FROM bids WHERE question_index = ?", (question_index,))
     conn.commit()
@@ -419,37 +434,7 @@ def get_current_q_index_from_db(conn):
     return row[0] + 1
 
 
-def get_max_bid_for_group(question_index, group_name, conn):
-    """Ambil bid tertinggi sejauh ini (DB + session_state) untuk satu kelompok & pertanyaan."""
-    # dari DB (history)
-    c = conn.cursor()
-    c.execute(
-        "SELECT MAX(bid) FROM bids WHERE question_index = ? AND group_name = ?",
-        (question_index, group_name),
-    )
-    row = c.fetchone()
-    max_db = row[0] if row and row[0] is not None else None
-
-    # dari session current_bids
-    max_state = None
-    for b in st.session_state.current_bids:
-        if b["group"] == group_name:
-            if max_state is None or b["bid"] > max_state:
-                max_state = b["bid"]
-
-    if max_db is None and max_state is None:
-        return None
-    if max_db is None:
-        return max_state
-    if max_state is None:
-        return max_db
-    return max(max_db, max_state)
-
 def load_current_bids_for_question(question_index, conn):
-    """
-    Ambil bid terakhir/tertinggi per kelompok untuk 1 pertanyaan
-    dan kembalikan dalam format [{group: ..., bid: ...}, ...]
-    """
     c = conn.cursor()
     c.execute(
         """
@@ -464,8 +449,18 @@ def load_current_bids_for_question(question_index, conn):
     return [{"group": r[0], "bid": r[1]} for r in rows]
 
 
+def get_max_bid_for_group(question_index, group_name, conn):
+    c = conn.cursor()
+    c.execute(
+        "SELECT MAX(bid) FROM bids WHERE question_index = ? AND group_name = ?",
+        (question_index, group_name),
+    )
+    row = c.fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
 # ----------------------------------------------------
-# SESSION STATE
+# SESSION STATE INIT
 # ----------------------------------------------------
 if "groups" not in st.session_state:
     st.session_state.groups = []
@@ -481,9 +476,11 @@ if "winners" not in st.session_state:
     st.session_state.winners = []
 if "show_clear_confirm" not in st.session_state:
     st.session_state.show_clear_confirm = False
+if "confirm_delete_class" not in st.session_state:
+    st.session_state.confirm_delete_class = None
 
 # ----------------------------------------------------
-# SIDEBAR: CLASS SELECTION & MODE
+# SIDEBAR: CLASS SELECTION & MANAGEMENT
 # ----------------------------------------------------
 st.sidebar.title("🏫 Kelas")
 
@@ -492,8 +489,6 @@ current_class = st.session_state.get("current_class_name", "")
 
 if existing_classes:
     options = ["(Kelas baru)"] + existing_classes
-
-    # set default selection
     default_index = 0
     if current_class and current_class in existing_classes:
         default_index = existing_classes.index(current_class) + 1
@@ -511,17 +506,15 @@ if existing_classes:
             placeholder="Misal: IF401 Pagi",
         )
     else:
-        # pakai kelas dari dropdown
         class_input = selected
 else:
-    # belum ada DB kelas, langsung input baru
     class_input = st.sidebar.text_input(
         "Nama kelas:",
         value=current_class,
         placeholder="Misal: IF401 Pagi",
     )
 
-# kalau ganti nama kelas → reset koneksi & re-init
+# ganti kelas -> reset koneksi & init ulang
 if class_input != current_class:
     st.session_state["current_class_name"] = class_input.strip()
     if "db_conn" in st.session_state:
@@ -533,17 +526,97 @@ if class_input != current_class:
     st.session_state.pop("initialized_from_db", None)
     st.rerun()
 
-mode = st.sidebar.radio("🎮 Mode Game", ["Setup", "Auction"])
+# Kelola kelas (rename / delete)
+st.sidebar.markdown("### Kelola kelas")
+if existing_classes:
+    manage_selected = st.sidebar.selectbox(
+        "Pilih kelas untuk diubah / hapus",
+        existing_classes,
+        key="manage_class_select",
+    )
+
+    new_name = st.sidebar.text_input(
+        "Nama baru untuk kelas ini:",
+        value=manage_selected,
+        key="manage_class_name",
+    )
+
+    col_m1, col_m2 = st.sidebar.columns(2)
+    with col_m1:
+        if st.button("💾 Rename kelas"):
+            old_safe = class_label_to_safe(manage_selected)
+            new_safe = class_label_to_safe(new_name)
+            old_path = f"auction_{old_safe}.db"
+            new_path = f"auction_{new_safe}.db"
+            if old_path != new_path and os.path.exists(new_path):
+                st.sidebar.error("Nama kelas baru sudah dipakai kelas lain.")
+            else:
+                try:
+                    os.rename(old_path, new_path)
+                except FileNotFoundError:
+                    st.sidebar.error("File DB kelas lama tidak ditemukan.")
+                else:
+                    if st.session_state.get("current_class_name", "") == manage_selected:
+                        st.session_state["current_class_name"] = new_name
+                        if "db_conn" in st.session_state:
+                            try:
+                                st.session_state["db_conn"].close()
+                            except Exception:
+                                pass
+                            del st.session_state["db_conn"]
+                        st.session_state.pop("initialized_from_db", None)
+                    st.sidebar.success("Nama kelas berhasil diubah.")
+                    st.rerun()
+
+    with col_m2:
+        if st.button("🗑 Hapus kelas ini"):
+            st.session_state.confirm_delete_class = manage_selected
+
+    if st.session_state.confirm_delete_class:
+        del_name = st.session_state.confirm_delete_class
+        st.sidebar.warning(
+            f"Yakin ingin menghapus kelas '{del_name}'? "
+            "Semua data bid & pemenang untuk kelas ini akan hilang."
+        )
+        c1, c2 = st.sidebar.columns(2)
+        with c1:
+            if st.button("✅ Ya, hapus", key="confirm_delete_yes"):
+                safe = class_label_to_safe(del_name)
+                path = f"auction_{safe}.db"
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    st.sidebar.error(f"Gagal menghapus file DB: {e}")
+                else:
+                    if st.session_state.get("current_class_name", "") == del_name:
+                        st.session_state["current_class_name"] = ""
+                        if "db_conn" in st.session_state:
+                            try:
+                                st.session_state["db_conn"].close()
+                            except Exception:
+                                pass
+                            del st.session_state["db_conn"]
+                        st.session_state.pop("initialized_from_db", None)
+                    st.sidebar.success(f"Kelas '{del_name}' dihapus.")
+                st.session_state.confirm_delete_class = None
+                st.rerun()
+        with c2:
+            if st.button("❌ Batal", key="confirm_delete_no"):
+                st.session_state.confirm_delete_class = None
+
+mode = st.sidebar.radio("🎮 Mode Game", ["Setup", "Auction", "Jawaban Kelompok"])
 st.sidebar.markdown("---")
 st.sidebar.markdown(
-    "**Tips:**\n- Set kelas di atas (opsional, kosong = default)\n"
+    "**Tips:**\n"
+    "- Set / pilih kelas di atas\n"
     "- Atur kelompok & pertanyaan di *Setup*\n"
-    "- Pindah ke *Auction* saat kelas dimulai"
+    "- Gunakan *Auction* saat bidding berlangsung\n"
+    "- Lihat rincian tugas jawaban di *Jawaban Kelompok*"
 )
 
-
 # ----------------------------------------------------
-# DB CONN & INITIAL LOAD PER CLASS
+# DB CONNECTION & FIRST LOAD
 # ----------------------------------------------------
 conn = get_db_conn()
 
@@ -558,7 +631,6 @@ if "initialized_from_db" not in st.session_state:
     else:
         st.session_state.current_q_idx = 0
 
-    # isi current_bids dari DB untuk pertanyaan aktif (kalau masih dalam range)
     if (
         st.session_state.questions
         and st.session_state.current_q_idx < len(st.session_state.questions)
@@ -572,12 +644,14 @@ if "initialized_from_db" not in st.session_state:
     st.session_state.initialized_from_db = True
 
 
-
 def reset_auction_state_from_db():
     st.session_state.scores = compute_scores_from_db(conn)
     st.session_state.winners = load_winners_from_db(conn)
     st.session_state.current_q_idx = 0
-    st.session_state.current_bids = []
+    if st.session_state.questions:
+        st.session_state.current_bids = load_current_bids_for_question(0, conn)
+    else:
+        st.session_state.current_bids = []
     st.session_state.show_clear_confirm = False
 
 
@@ -600,11 +674,11 @@ def upsert_bid(group_name, bid_value):
 # ----------------------------------------------------
 st.markdown(
     """
-    <div class="glass-card" style="margin-bottom: 1.4rem;">
+    <div class="glass-card" style="margin-bottom: 1.2rem;">
         <div class="hero-title">Digital Question Auction Arena</div>
         <div class="hero-subtitle">
             Kelompok mengelola poin, melakukan bidding, dan merebut hak menjawab pertanyaan.
-            created by Brilly Andro brillyandro.com
+            Cocok untuk kelas interaktif & diskusi yang rame tapi terstruktur.
         </div>
     </div>
     """,
@@ -723,7 +797,7 @@ if mode == "Setup":
                 st.session_state.questions = new_questions
                 save_questions_to_db(new_questions, conn)
                 reset_auction_state_from_db()
-                st.success("Pertanyaan disimpan ke DB & auction kembali ke pertanyaan pertama.")
+                st.success("Pertanyaan disimpan ke DB & auction kembali ke awal.")
 
         with col_q2:
             if st.button("🔁 Reset poin & posisi auction (config tetap)"):
@@ -799,14 +873,14 @@ if mode == "Setup":
 # =========================================================
 #                       MODE AUCTION
 # =========================================================
-else:
+elif mode == "Auction":
     if not st.session_state.groups or not st.session_state.questions:
         st.error("Kelompok atau pertanyaan belum diset. Masuk ke mode **Setup** dulu.")
         st.stop()
 
     st.session_state.scores = compute_scores_from_db(conn)
 
-    # ---------- SCOREBOARD (dinamis & simetris 1–2 baris) ----------
+    # ---------- SCOREBOARD ----------
     st.markdown(
         '<div class="section-title">Scoreboard Kelompok <span class="info-badge">Live</span></div>',
         unsafe_allow_html=True,
@@ -820,7 +894,6 @@ else:
     ]
 
     n = len(score_items)
-
     if n == 0:
         st.write("Belum ada kelompok.")
     else:
@@ -840,7 +913,6 @@ else:
         else:
             top_count = (n + 1) // 2
             bottom_count = n - top_count
-
             top_items = score_items[:top_count]
             bottom_items = score_items[top_count:]
 
@@ -874,13 +946,14 @@ else:
 
     # ---------- CURRENT QUESTION ----------
     idx = st.session_state.current_q_idx
-    total_q = len(st.session_state.questions)   
+    total_q = len(st.session_state.questions)
 
+    # sync current_bids dari DB setiap rerun
     if idx < total_q:
         st.session_state.current_bids = load_current_bids_for_question(idx, conn)
     else:
         st.session_state.current_bids = []
-    
+
     if idx >= total_q:
         st.success("🎉 Semua pertanyaan sudah selesai di-auction.")
         st.markdown(
@@ -891,20 +964,33 @@ else:
 
         winners_db = load_winners_from_db(conn)
         if winners_db:
-            hist_rows = []
-            for w in winners_db:
+            rows = []
+            for i, w in enumerate(winners_db, start=1):
                 q_idx = w["question_index"]
-                q = st.session_state.questions[q_idx]["question"]
-                hist_rows.append(
+                q_text = (
+                    st.session_state.questions[q_idx]["question"]
+                    if q_idx < len(st.session_state.questions)
+                    else "(Pertanyaan tidak ditemukan)"
+                )
+                rows.append(
                     {
-                        "No": q_idx + 1,
-                        "Pertanyaan": q,
+                        "No": i,
+                        "Pertanyaan": q_text,
                         "Pemenang": w["winner_group"],
                         "Bid": w["bid"],
                     }
                 )
-            hist_df = pd.DataFrame(hist_rows)
-            st.table(hist_df)
+            df = pd.DataFrame(rows)
+            st.dataframe(
+                df.style.set_properties(
+                    subset=["No", "Pemenang", "Bid"], **{"text-align": "center"}
+                ).set_properties(
+                    subset=["Pertanyaan"],
+                    **{"text-align": "left", "white-space": "normal"},
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.write("Belum ada pemenang.")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -924,7 +1010,6 @@ else:
     )
     st.progress(progress)
 
-    # Card besar di tengah untuk pertanyaan & biaya awal
     st.markdown(
         f"""
         <div class="question-card">
@@ -972,7 +1057,9 @@ else:
             elif bid_value < base_cost:
                 st.warning(f"Bid harus minimal {base_cost} poin.")
             elif bid_value > max_points_group:
-                st.warning(f"Bid tidak boleh melebihi poin yang dimiliki ({max_points_group}).")
+                st.warning(
+                    f"Bid tidak boleh melebihi poin yang dimiliki ({max_points_group})."
+                )
             elif prev_bid is not None and bid_value <= prev_bid:
                 st.warning(
                     f"Bid baru harus lebih besar dari bid sebelumnya untuk {selected_group} "
@@ -986,7 +1073,6 @@ else:
                     f"(juga tercatat di DB sebagai history)."
                 )
 
-        # Clear semua bid (dengan konfirmasi)
         st.markdown("---")
         if st.button("🧹 Clear semua bid untuk pertanyaan ini"):
             st.session_state.show_clear_confirm = True
@@ -1027,15 +1113,18 @@ else:
 
             st.markdown("**Daftar Bid:**")
             for idx_row, b in enumerate(sorted_bids):
-                col_g, col_b, col_del = st.columns([3, 2, 1])
-                with col_g:
+                c_g, c_b, c_del = st.columns([3, 2, 1])
+                with c_g:
                     st.write(b["group"])
-                with col_b:
+                with c_b:
                     st.write(f"{b['bid']} poin")
-                with col_del:
-                    if st.button("🗑", key=f"del_bid_{idx}_{idx_row}", help="Hapus bid grup ini"):
+                with c_del:
+                    if st.button(
+                        "🗑", key=f"del_bid_{idx}_{idx_row}", help="Hapus bid grup ini"
+                    ):
                         st.session_state.current_bids = [
-                            bb for bb in st.session_state.current_bids
+                            bb
+                            for bb in st.session_state.current_bids
                             if bb["group"] != b["group"]
                         ]
                         delete_bids_for_group(idx, b["group"], conn)
@@ -1086,7 +1175,7 @@ else:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- HISTORY ----------
+    # ---------- HISTORY (REKAP SEMENTARA) ----------
     st.markdown("")
     st.markdown(
         '<div class="section-title">Rekap Pemenang Sementara</div>',
@@ -1096,24 +1185,165 @@ else:
 
     winners_db = load_winners_from_db(conn)
     if winners_db:
-        hist_rows = []
-        for w in winners_db:
+        rows = []
+        for i, w in enumerate(winners_db, start=1):
             q_idx = w["question_index"]
-            if q_idx < len(st.session_state.questions):
-                q = st.session_state.questions[q_idx]["question"]
-            else:
-                q = "(Pertanyaan tidak ditemukan)"
-            hist_rows.append(
+            q_text = (
+                st.session_state.questions[q_idx]["question"]
+                if q_idx < len(st.session_state.questions)
+                else "(Pertanyaan tidak ditemukan)"
+            )
+            rows.append(
                 {
-                    "No": q_idx + 1,
-                    "Pertanyaan": q,
+                    "No": i,
+                    "Pertanyaan": q_text,
                     "Pemenang": w["winner_group"],
                     "Bid": w["bid"],
                 }
             )
-        hist_df = pd.DataFrame(hist_rows)
-        st.table(hist_df)
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df.style.set_properties(
+                subset=["No", "Pemenang", "Bid"], **{"text-align": "center"}
+            ).set_properties(
+                subset=["Pertanyaan"],
+                **{"text-align": "left", "white-space": "normal"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.write("Belum ada pertanyaan yang selesai di-auction.")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================================
+#                MODE JAWABAN KELOMPOK (VIEW ONLY)
+# =========================================================
+else:  # Jawaban Kelompok
+    if not st.session_state.groups or not st.session_state.questions:
+        st.error("Kelompok atau pertanyaan belum diset. Masuk ke mode **Setup** dulu.")
+        st.stop()
+
+    st.session_state.scores = compute_scores_from_db(conn)
+    winners_db = load_winners_from_db(conn)
+
+    st.markdown(
+        '<div class="section-title">Rangkuman Tugas Jawaban per Kelompok</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class="glass-card">
+            Halaman ini menampilkan daftar pertanyaan yang dimenangkan tiap kelompok,
+            lengkap dengan nilai bid yang sudah mereka keluarkan. Cocok ditampilkan
+            setelah sesi auction selesai, saat kelompok mulai menyusun jawaban.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    groups_in_order = load_groups_from_db(conn)
+    scores_dict = st.session_state.scores
+
+    # ---------- Summary card ----------
+    st.markdown(
+        '<div class="section-title">Ringkasan Singkat</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+
+    summary_rows = []
+    for g in groups_in_order:
+        name = g["name"]
+        won = [w for w in winners_db if w["winner_group"] == name]
+        total_bid = sum(w["bid"] for w in won)
+        remaining = scores_dict.get(name, g["initial_points"])
+        summary_rows.append(
+            {
+                "Kelompok": name,
+                "Jumlah Pertanyaan": len(won),
+                "Total Bid": total_bid,
+                "Sisa Poin": remaining,
+            }
+        )
+
+    if summary_rows:
+        df_sum = pd.DataFrame(summary_rows)
+        st.dataframe(
+            df_sum.style.set_properties(
+                subset=["Jumlah Pertanyaan", "Total Bid", "Sisa Poin"],
+                **{"text-align": "center"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Belum ada pemenang. Jalankan auction terlebih dahulu.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ---------- Detail per group ----------
+    st.markdown(
+        '<div class="section-title">Detail Pertanyaan per Kelompok</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class="glass-card" style="padding-bottom: 0.6rem;">
+            Gunakan tab di bawah untuk melihat daftar pertanyaan yang harus dijawab
+            masing-masing kelompok.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not winners_db:
+        st.info("Belum ada data pemenang untuk ditampilkan.")
+        st.stop()
+
+    tab_labels = [g["name"] for g in groups_in_order]
+    tabs = st.tabs(tab_labels)
+
+    for tab, group in zip(tabs, groups_in_order):
+        name = group["name"]
+        with tab:
+            st.markdown(
+                f'<div class="section-title">Kelompok: {name}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+
+            wins = [w for w in winners_db if w["winner_group"] == name]
+
+            if not wins:
+                st.info("Kelompok ini belum memenangkan pertanyaan apa pun.")
+            else:
+                rows = []
+                for i, w in enumerate(wins, start=1):
+                    q_idx = w["question_index"]
+                    q_text = (
+                        st.session_state.questions[q_idx]["question"]
+                        if q_idx < len(st.session_state.questions)
+                        else "(Pertanyaan tidak ditemukan)"
+                    )
+                    rows.append(
+                        {
+                            "No": i,
+                            "Pertanyaan": q_text,
+                            "Bid": w["bid"],
+                        }
+                    )
+                df = pd.DataFrame(rows)
+                st.dataframe(
+                    df.style.set_properties(
+                        subset=["No", "Bid"], **{"text-align": "center"}
+                    ).set_properties(
+                        subset=["Pertanyaan"],
+                        **{"text-align": "left", "white-space": "normal"},
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.markdown("</div>", unsafe_allow_html=True)
