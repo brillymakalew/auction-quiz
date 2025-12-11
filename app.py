@@ -25,6 +25,7 @@ st.markdown(
     }
     [data-testid="stHeader"] { background: transparent; }
 
+    /* Sedikit rapikan padding utama */
     [data-testid="stAppViewContainer"] > .main {
         padding: 1.4rem 2.4rem 2.2rem 2.4rem;
     }
@@ -129,6 +130,7 @@ st.markdown(
         color: #e5e7eb !important;
     }
 
+    /* dropdown selectbox dark */
     div[data-baseweb="select"] > div {
         background-color: rgba(15,23,42,0.92) !important;
         color: #e5e7eb !important;
@@ -210,6 +212,7 @@ st.markdown(
         font-weight:700;
     }
 
+    /* Tombol HAPUS BID: pure icon, no background */
     div[class^="st-key-del_bid_"] button,
     div[class*=" st-key-del_bid_"] button {
         background: transparent !important;
@@ -254,7 +257,7 @@ def list_existing_classes():
     files = glob.glob("auction_*.db")
     labels = []
     for f in files:
-        base = os.path.splitext(os.path.basename(f))[0]
+        base = os.path.splitext(os.path.basename(f))[0]  # auction_xxx
         if not base.startswith("auction_"):
             continue
         safe = base[len("auction_") :]
@@ -511,6 +514,7 @@ else:
         placeholder="Misal: IF401 Pagi",
     )
 
+# ganti kelas -> reset koneksi & init ulang
 if class_input != current_class:
     st.session_state["current_class_name"] = class_input.strip()
     if "db_conn" in st.session_state:
@@ -522,6 +526,7 @@ if class_input != current_class:
     st.session_state.pop("initialized_from_db", None)
     st.rerun()
 
+# Kelola kelas (rename / delete)
 st.sidebar.markdown("### Kelola kelas")
 if existing_classes:
     manage_selected = st.sidebar.selectbox(
@@ -807,40 +812,21 @@ if mode == "Setup":
 
         st.markdown("")
         st.markdown(
-            '<div class="section-title">Import Pertanyaan dari File</div>',
+            '<div class="section-title">Import Pertanyaan dari Excel</div>',
             unsafe_allow_html=True,
         )
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
         uploaded = st.file_uploader(
-            "Upload file (Excel/CSV) dengan kolom: question, base_cost",
-            type=["xlsx", "xls", "csv"],
+            "Upload file Excel dengan kolom: question, base_cost",
+            type=["xlsx", "xls"],
         )
-
-        df_import = None
         if uploaded is not None:
-            filename = uploaded.name.lower()
-            try:
-                if filename.endswith(".csv"):
-                    df_import = pd.read_csv(uploaded)
-                else:
-                    # butuh openpyxl di requirements.txt untuk Excel
-                    df_import = pd.read_excel(uploaded)
-            except ImportError:
-                st.error(
-                    "Tidak bisa membaca file Excel karena package **openpyxl** belum terpasang.\n\n"
-                    "Solusi:\n"
-                    "- Tambahkan `openpyxl` di **requirements.txt**, atau\n"
-                    "- Simpan file sebagai **CSV** lalu upload lagi."
-                )
-            except Exception as e:
-                st.error(f"Gagal membaca file: {e}")
-
-        if df_import is not None:
+            df_import = pd.read_excel(uploaded)
             st.write("Preview data:")
             st.dataframe(df_import.head())
 
-            if st.button("📥 Gunakan data dari file ini"):
+            if st.button("📥 Gunakan data dari Excel ini"):
                 if "question" not in df_import.columns or "base_cost" not in df_import.columns:
                     st.error("File harus punya kolom 'question' dan 'base_cost'.")
                 else:
@@ -856,10 +842,11 @@ if mode == "Setup":
                     st.session_state.questions = new_questions
                     save_questions_to_db(new_questions, conn)
                     reset_auction_state_from_db()
-                    st.success("Pertanyaan dari file disimpan ke DB & siap di-auction.")
+                    st.success("Pertanyaan dari Excel disimpan ke DB & siap di-auction.")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # Ringkasan
         st.markdown("")
         st.markdown(
             '<div class="section-title">Ringkasan</div>',
@@ -893,6 +880,7 @@ elif mode == "Auction":
 
     st.session_state.scores = compute_scores_from_db(conn)
 
+    # ---------- SCOREBOARD ----------
     st.markdown(
         '<div class="section-title">Scoreboard Kelompok <span class="info-badge">Live</span></div>',
         unsafe_allow_html=True,
@@ -956,9 +944,11 @@ elif mode == "Auction":
 
     st.markdown("")
 
+    # ---------- CURRENT QUESTION ----------
     idx = st.session_state.current_q_idx
     total_q = len(st.session_state.questions)
 
+    # sync current_bids dari DB setiap rerun
     if idx < total_q:
         st.session_state.current_bids = load_current_bids_for_question(idx, conn)
     else:
@@ -1036,6 +1026,7 @@ elif mode == "Auction":
 
     st.markdown("")
 
+    # ---------- AUCTION AREA ----------
     col_bid, col_table = st.columns([1.4, 1])
 
     with col_bid:
@@ -1150,6 +1141,7 @@ elif mode == "Auction":
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("")
+    # ---------- CONFIRM WINNER ----------
     st.markdown(
         '<div class="section-title">Tutup Auction & Tetapkan Pemenang</div>',
         unsafe_allow_html=True,
@@ -1183,6 +1175,7 @@ elif mode == "Auction":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # ---------- HISTORY (REKAP SEMENTARA) ----------
     st.markdown("")
     st.markdown(
         '<div class="section-title">Rekap Pemenang Sementara</div>',
@@ -1225,9 +1218,9 @@ elif mode == "Auction":
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-#                MODE JAWABAN KELOMPOK
+#                MODE JAWABAN KELOMPOK (VIEW ONLY)
 # =========================================================
-else:
+else:  # Jawaban Kelompok
     if not st.session_state.groups or not st.session_state.questions:
         st.error("Kelompok atau pertanyaan belum diset. Masuk ke mode **Setup** dulu.")
         st.stop()
@@ -1253,6 +1246,7 @@ else:
     groups_in_order = load_groups_from_db(conn)
     scores_dict = st.session_state.scores
 
+    # ---------- Summary card ----------
     st.markdown(
         '<div class="section-title">Ringkasan Singkat</div>',
         unsafe_allow_html=True,
@@ -1289,6 +1283,7 @@ else:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # ---------- Detail per group ----------
     st.markdown(
         '<div class="section-title">Detail Pertanyaan per Kelompok</div>',
         unsafe_allow_html=True,
